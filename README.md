@@ -1,6 +1,9 @@
 Assistant FAQ – Flavescence dorée (POC)
+
 🎯 Objectif
+
 Ce projet est un prototype web (POC) d’assistant FAQ dédié à la flavescence dorée, à destination des viticulteurs et acteurs de la filière Champagne.
+
 Il permet de :
 
 Rechercher une réponse à partir d’une question libre / Explorer les questions par thématiques / Afficher une réponse principale ainsi que des questions proches
@@ -10,13 +13,17 @@ Rechercher une réponse à partir d’une question libre / Explorer les question
 🧩 Fonctionnalités
 
 ✅ Recherche plein texte dans une base FAQ locale
+
 ✅ Gestion de variantes de questions (synonymes, reformulations)
+
 ✅ Navigation par catégories :
 
 Connaissances & formation / Prospection / Lutte / Prélèvements & arrachage / Certification
 
 ✅ Interface responsive, légère et autonome
+
 ✅ Dépliage des questions/réponses type FAQ
+
 ✅ Fonctionnement 100 % côté client (HTML / CSS / JavaScript)
 
 🏗️ Architecture
@@ -43,7 +50,9 @@ Ce POC est conforme à un usage informatif et non transactionnel.
 Données figées dans le code / Pas de gestion multi‑utilisateurs / Pas de moteur sémantique avancé (type IA) / Maintenance manuelle du contenu
 
 📌 Statut du projet
+
 ✅ POC / Prototype fonctionnel
+
 ❌ Non destiné à un usage industriel sans refonte (sécurité, gouvernance, maintenance)
 
-👤 Auteur : Hugo Moutte - Prototype réalisé dans un cadre d’accompagnement métier / innovation digitale
+👤 Auteur : Hugo Moutte - Prototype réalisé dans un cadre d’accompagnement métier
