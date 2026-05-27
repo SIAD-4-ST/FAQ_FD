@@ -58,6 +58,4 @@ Maintenance manuelle du contenu
 ✅ POC / Prototype fonctionnel
 ❌ Non destiné à un usage industriel sans refonte (sécurité, gouvernance, maintenance)
 
-👤 Auteur
-Hugo Moutte
-Prototype réalisé dans un cadre d’accompagnement métier / innovation digitale# FAQ_FD
+👤 Auteur : Hugo Moutte - Prototype réalisé dans un cadre d’accompagnement métier / innovation digitale
