@@ -262,6 +262,29 @@
       margin-left: 6px;
     }
 
+
+    /* Bloc feedback */
+    .feedback-block {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 10px;
+      margin-top: 16px;
+      padding-top: 14px;
+      border-top: 1px solid #eee;
+    }
+    .feedback-label { font-weight: 600; color: #374151; }
+    .feedback-btn {
+      border: 1px solid #d1d5db;
+      background: #fff;
+      border-radius: 999px;
+      padding: 6px 14px;
+      cursor: pointer;
+      font-size: 0.95rem;
+    }
+    .feedback-btn:hover:not(:disabled) { background: #f3f4f6; }
+    .feedback-btn:disabled { opacity: 0.5; cursor: default; }
+    .feedback-thanks { color: #15803d; font-weight: 600; }
   </style>
 </head>
 
@@ -271,6 +294,7 @@
       src="https://www.champagne.fr/themes/custom/champagne/logo.svg"
       alt="Comité Champagne"
       class="cc-topbar-logo"
+      onerror="this.style.display='none'"
     />
   </header>
 
@@ -304,7 +328,7 @@
           Appuyez sur <strong>Entrée</strong> ou cliquez sur <strong>Rechercher</strong>.
         </div>
 
-        <div id="searchMessage" class="message info"></div>
+        <div id="searchMessage" class="message info" role="status" aria-live="polite"></div>
       </section>
 
       <!-- CARTE 2 : Catégories -->
@@ -325,7 +349,7 @@
         </section>
       </section>
 
-      <section class="card" id="resultsCard" style="display:none;">
+      <section class="card" id="resultsCard" style="display:none;" aria-live="polite">
         <div class="answer-title">Résultats de recherche</div>
 
         <div class="answer-question-label">Question :</div>
@@ -333,6 +357,13 @@
 
         <div class="answer-question-label">Réponse :</div>
         <div id="answerBody" class="answer-body"></div>
+
+        <div id="feedbackBlock" class="feedback-block">
+          <span class="feedback-label">Cette réponse vous a-t-elle aidé ?</span>
+          <button id="feedbackYes" class="feedback-btn" type="button">👍 Oui</button>
+          <button id="feedbackNo" class="feedback-btn" type="button">👎 Non</button>
+          <span id="feedbackThanks" class="feedback-thanks" hidden>Merci pour votre retour.</span>
+        </div>
 
         <div id="alternativesSection" class="alternatives-section" style="display:none;">
           <div class="alternatives-title">Autres questions proches</div>
@@ -2072,7 +2103,17 @@
     const BETA = 0.2;
     const MIN_SCORE = 0.25;
 
-    const LS_KEYS = { FAQ_WRAPPER: "faq_fd_local_wrapper_v1" };
+    // Version du contenu editorial embarque. A INCREMENTER a chaque mise a jour
+    // des reponses dans DEFAULT_FAQ_WRAPPER : force le rafraichissement chez les
+    // utilisateurs et corrige le bug de cache localStorage fige.
+    const CONTENT_VERSION = "2026-06-10";
+
+    // Separation stricte : contenu editorial (versionne, ecrase aux MAJ) vs
+    // compteurs d'usage (conserves par id, independants du contenu).
+    const LS_KEYS = {
+      CONTENT: "faq_fd_content_v1",
+      COUNTERS: "faq_fd_counters_v1"
+    };
 
     const DEFAULT_PLACEHOLDER = "Exemple : La prospection est-elle obligatoire ?";
     let lockedQuery = null; // dernière question exécutée (verrou)
@@ -2170,24 +2211,29 @@
         qBtn.className = "qa-q";
         qBtn.type = "button";
         qBtn.textContent = item.question;
+        qBtn.setAttribute("aria-expanded", "false");
 
         const aDiv = document.createElement("div");
         aDiv.className = "qa-a";
-        aDiv.innerHTML = (item.reponse || "").replace(/\n/g, "<br>");
+        aDiv.innerHTML = sanitizeHtml((item.reponse || "").replace(/\n/g, "<br>"));
 
         qBtn.addEventListener("click", () => {
 
           const wasOpen = card.classList.contains("open");
 
           // Fermer toutes les réponses ouvertes
-          document.querySelectorAll("#themeList .qa-item.open")
-            .forEach(el => el.classList.remove("open"));
+          document.querySelectorAll("#themeList .qa-item.open").forEach((el) => {
+            el.classList.remove("open");
+            const b = el.querySelector(".qa-q");
+            if (b) b.setAttribute("aria-expanded", "false");
+          });
 
           // Si on reclique sur la même → elle reste fermée
           if (wasOpen) return;
 
           // Sinon on ouvre celle-ci
           card.classList.add("open");
+          qBtn.setAttribute("aria-expanded", "true");
 
           // Compter la vue
           if (!card.dataset.viewCounted) {
@@ -2225,18 +2271,32 @@
       if (t.endsWith('s') && t.length > 3) t = t.slice(0, -1);
       if (DIRECT_CORRECTIONS[t]) return DIRECT_CORRECTIONS[t];
 
-      let best = t;
-      let bestDist = Infinity;
-      for (const word of VOCABULARY) {
-        const d = levenshtein(t, word);
-        if (d < bestDist) { bestDist = d; best = word; }
+      // Les mots courts (fd, zd, qr...) relevent du matching exact / des
+      // corrections directes : la correction floue y produit des faux positifs
+      // (ex. "sd" -> "fd"). On ne tente le flou qu'a partir de 4 lettres,
+      // avec un budget d'erreur proportionnel a la longueur.
+      if (t.length >= 4) {
+        const maxDist = t.length <= 5 ? 1 : 2;
+        let best = t;
+        let bestDist = Infinity;
+        for (const word of VOCABULARY) {
+          const d = levenshtein(t, word);
+          if (d < bestDist) { bestDist = d; best = word; }
+        }
+        if (bestDist <= maxDist) return best;
       }
-      return bestDist <= 2 ? best : t;
+      return t;
     }
 
     function expandSynonyms(term) {
       const extras = SYNONYMS[term] || [];
-      return [term, ...extras];
+      const out = [term];
+      extras.forEach((syn) => {
+        // Un synonyme multi-mots ("flavescence doree") doit etre eclate,
+        // sinon il ne matche jamais l'index (tokens mono-mot).
+        String(syn).split(/\s+/).forEach((w) => { if (w) out.push(w); });
+      });
+      return out;
     }
 
     function tokenize(text) {
@@ -2265,20 +2325,98 @@
     let indexDocs = [];
     let idf = new Map();
 
-    function loadFaqWrapper() {
-      const raw = localStorage.getItem(LS_KEYS.FAQ_WRAPPER);
-      if (!raw) return structuredClone(DEFAULT_FAQ_WRAPPER);
-      try {
-        const obj = JSON.parse(raw);
-        if (!obj || !Array.isArray(obj.faq)) return structuredClone(DEFAULT_FAQ_WRAPPER);
-        return obj;
-      } catch {
-        return structuredClone(DEFAULT_FAQ_WRAPPER);
+    // --- Contenu editorial (versionne) ------------------------------------
+    function loadContent() {
+      const raw = localStorage.getItem(LS_KEYS.CONTENT);
+      if (raw) {
+        try {
+          const obj = JSON.parse(raw);
+          // On ne sert le cache QUE si la version correspond a celle embarquee.
+          if (obj && Array.isArray(obj.faq) && obj.version === CONTENT_VERSION) {
+            return obj;
+          }
+        } catch {}
       }
+      // Absent, corrompu, ou version perimee -> on (re)seme depuis le HTML.
+      const seeded = { version: CONTENT_VERSION, faq: structuredClone(DEFAULT_FAQ_WRAPPER.faq) };
+      localStorage.setItem(LS_KEYS.CONTENT, JSON.stringify(seeded));
+      return seeded;
     }
 
-    function saveFaqWrapper(wrapper) {
-      localStorage.setItem(LS_KEYS.FAQ_WRAPPER, JSON.stringify(wrapper, null, 2));
+    // --- Compteurs d'usage (independants du contenu) ----------------------
+    function loadCounters() {
+      const raw = localStorage.getItem(LS_KEYS.COUNTERS);
+      if (!raw) return {};
+      try {
+        const obj = JSON.parse(raw);
+        return (obj && typeof obj === "object") ? obj : {};
+      } catch { return {}; }
+    }
+
+    function saveCounters(counters) {
+      localStorage.setItem(LS_KEYS.COUNTERS, JSON.stringify(counters));
+    }
+
+    // Renvoie { faq } avec les compteurs fusionnes par id (lecture pratique).
+    function loadFaqWrapper() {
+      const content = loadContent();
+      const counters = loadCounters();
+      const faq = content.faq.map((item) => {
+        const base = ensureCounters(structuredClone(item));
+        const c = counters[String(base.id)] || {};
+        base.nb_vues = c.nb_vues || 0;
+        base.nb_oui = c.nb_oui || 0;
+        base.nb_non = c.nb_non || 0;
+        return base;
+      });
+      return { faq };
+    }
+
+    function recordFeedback(id, helpful) {
+      const k = String(id);
+      const counters = loadCounters();
+      const c = counters[k] || { nb_vues: 0, nb_oui: 0, nb_non: 0 };
+      if (helpful) c.nb_oui = (c.nb_oui || 0) + 1;
+      else c.nb_non = (c.nb_non || 0) + 1;
+      counters[k] = c;
+      saveCounters(counters);
+      return { id, ...c };
+    }
+
+    // --- Assainissement HTML (necessaire des qu'un import sera possible) ---
+    // Whitelist minimale : seuls les liens et la mise en forme basique passent.
+    function sanitizeHtml(dirty) {
+      const allowed = new Set(["A","BR","B","STRONG","EM","I","UL","OL","LI","P","SPAN"]);
+      const doc = new DOMParser().parseFromString("<div>" + (dirty || "") + "</div>", "text/html");
+      const root = doc.body.firstChild;
+      function clean(node) {
+        [...node.childNodes].forEach((child) => {
+          if (child.nodeType === Node.ELEMENT_NODE) {
+            if (!allowed.has(child.tagName)) {
+              child.replaceWith(document.createTextNode(child.textContent || ""));
+              return;
+            }
+            [...child.attributes].forEach((attr) => {
+              const name = attr.name.toLowerCase();
+              const keep = child.tagName === "A" && ["href","target","rel"].includes(name);
+              if (!keep) { child.removeAttribute(attr.name); return; }
+              if (name === "href") {
+                const v = (attr.value || "").trim();
+                if (/^\s*(javascript|data):/i.test(v)) child.removeAttribute("href");
+              }
+            });
+            if (child.tagName === "A" && child.getAttribute("href")) {
+              child.setAttribute("target", "_blank");
+              child.setAttribute("rel", "noopener noreferrer");
+            }
+            clean(child);
+          } else if (child.nodeType === Node.COMMENT_NODE) {
+            child.remove();
+          }
+        });
+      }
+      clean(root);
+      return root.innerHTML;
     }
 
     function ensureCounters(item) {
@@ -2292,37 +2430,39 @@
     }
 
     function buildIndexFromFaq(faqItems) {
-      const docsTokens = [];
+      // Deux niveaux distincts :
+      //  - sous-documents (question / chaque variante / tags) pour le MATCHING
+      //    (max-pooling au moment de la recherche) ;
+      //  - df/idf calcules au niveau ITEM (78 docs), pour ne PAS penaliser un
+      //    terme repete dans les paraphrases d'une meme question.
+      const subDocs = [];      // { id, tokens }
+      const itemTermSets = []; // termes uniques par item, pour le df
 
       faqItems.forEach((item) => {
-        const mainTokens = tokenize(item.question || '');
-        if (mainTokens.length > 0) docsTokens.push({ id: item.id, tokens: mainTokens });
-
-        if (Array.isArray(item.variantes)) {
-          item.variantes.forEach((variantText) => {
-            const variantTokens = tokenize(variantText || '');
-            if (variantTokens.length > 0) docsTokens.push({ id: item.id, tokens: variantTokens });
-          });
-        }
-        const tagTokens = tokenize((item.tags || []).join(' '));
-        if (tagTokens.length > 0) docsTokens.push({ id: item.id, tokens: tagTokens });
+        const itemTerms = new Set();
+        const add = (txt) => {
+          const toks = tokenize(txt || '');
+          if (toks.length > 0) subDocs.push({ id: item.id, tokens: toks });
+          toks.forEach((t) => itemTerms.add(t));
+        };
+        add(item.question);
+        (item.variantes || []).forEach(add);
+        add((item.tags || []).join(' '));
+        itemTermSets.push(itemTerms);
       });
 
       const df = new Map();
-      const N = docsTokens.length;
-
-      docsTokens.forEach((doc) => {
-        const uniqueTerms = new Set(doc.tokens);
-        uniqueTerms.forEach((term) => df.set(term, (df.get(term) || 0) + 1));
+      const N = itemTermSets.length || 1;
+      itemTermSets.forEach((set) => {
+        set.forEach((term) => df.set(term, (df.get(term) || 0) + 1));
       });
 
       idf = new Map();
       df.forEach((dfCount, term) => {
-        const idfValue = Math.log((N + 1) / (dfCount + 1)) + 1;
-        idf.set(term, idfValue);
+        idf.set(term, Math.log((N + 1) / (dfCount + 1)) + 1);
       });
 
-      indexDocs = docsTokens.map((doc) => {
+      indexDocs = subDocs.map((doc) => {
         const tfCounts = new Map();
         doc.tokens.forEach((t) => tfCounts.set(t, (tfCounts.get(t) || 0) + 1));
 
@@ -2331,17 +2471,11 @@
         let normSq = 0;
 
         tfCounts.forEach((count, term) => {
-          const tf = count / len;
-          const idfValue = idf.get(term) || 0;
-          const w = tf * idfValue;
-          if (w > 0) {
-            weights.set(term, w);
-            normSq += w * w;
-          }
+          const w = (count / len) * (idf.get(term) || 0);
+          if (w > 0) { weights.set(term, w); normSq += w * w; }
         });
 
-        const norm = Math.sqrt(normSq) || 1;
-        return { id: doc.id, weights, norm };
+        return { id: doc.id, weights, norm: Math.sqrt(normSq) || 1 };
       });
     }
 
@@ -2452,15 +2586,13 @@
     }
 
     function incrementViewCount(id) {
-      const qid = Number(id);
-      const wrapper = loadFaqWrapper();
-      const item = wrapper.faq.find(q => Number(q.id) === qid);
-      if (!item) return null;
-
-      ensureCounters(item);
-      item.nb_vues += 1;
-      saveFaqWrapper(wrapper);
-      return structuredClone(item);
+      const k = String(id);
+      const counters = loadCounters();
+      const c = counters[k] || { nb_vues: 0, nb_oui: 0, nb_non: 0 };
+      c.nb_vues = (c.nb_vues || 0) + 1;
+      counters[k] = c;
+      saveCounters(counters);
+      return { id, ...c };
     }
 
     const questionInput = document.getElementById("questionInput");
@@ -2476,15 +2608,21 @@
 
     let currentAnswer = null;
 
-    (function init() {
-      const wrapper = loadFaqWrapper();
-      wrapper.faq = wrapper.faq.map(ensureCounters);
-      saveFaqWrapper(wrapper);
+    const feedbackBlock = document.getElementById("feedbackBlock");
+    const feedbackYes = document.getElementById("feedbackYes");
+    const feedbackNo = document.getElementById("feedbackNo");
+    const feedbackThanks = document.getElementById("feedbackThanks");
 
+    (function init() {
+      loadContent(); // seme ou migre le contenu selon CONTENT_VERSION
+      const wrapper = loadFaqWrapper();
       buildIndexFromFaq(wrapper.faq);
       initTabs();
 
       searchButton.addEventListener("click", sendSearch);
+
+      if (feedbackYes) feedbackYes.addEventListener("click", () => handleFeedback(true));
+      if (feedbackNo) feedbackNo.addEventListener("click", () => handleFeedback(false));
       questionInput.addEventListener("keydown", (e) => {
         if (e.key === "Enter") { e.preventDefault(); sendSearch(); }
       });
@@ -2550,8 +2688,24 @@
       resultsCard.style.display = "block";
 
       answerQuestion.textContent = answer.question;
-      answerBody.innerHTML = (answer.reponse || "").replace(/\n/g, "<br>");
+      answerBody.innerHTML = sanitizeHtml((answer.reponse || "").replace(/\n/g, "<br>"));
+      resetFeedback();
+    }
 
+    function resetFeedback() {
+      if (!feedbackBlock) return;
+      feedbackBlock.style.display = "flex";
+      if (feedbackYes) feedbackYes.disabled = false;
+      if (feedbackNo) feedbackNo.disabled = false;
+      if (feedbackThanks) feedbackThanks.hidden = true;
+    }
+
+    function handleFeedback(helpful) {
+      if (!currentAnswer) return;
+      recordFeedback(currentAnswer.id, helpful);
+      if (feedbackYes) feedbackYes.disabled = true;
+      if (feedbackNo) feedbackNo.disabled = true;
+      if (feedbackThanks) feedbackThanks.hidden = false;
     }
 
     function displayAlternatives(alts) {
@@ -2567,30 +2721,34 @@
         const li = document.createElement("li");
         li.className = "alternative-item";
 
+        // Bouton : accessible au clavier nativement (contrairement a <li onclick>).
+        const btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "alternative-trigger";
+
         const q = document.createElement("span");
         q.className = "alternative-question";
         q.textContent = alt.question;
+        btn.appendChild(q);
 
-        const meta = document.createElement("span");
-        meta.className = "alternative-meta";
         let metaText = "";
         if (typeof alt.score === "number") metaText += `score ${alt.score}`;
-        meta.textContent = metaText ? `(${metaText})` : "";
+        if (metaText) {
+          const meta = document.createElement("span");
+          meta.className = "alternative-meta";
+          meta.textContent = `(${metaText})`;
+          btn.appendChild(meta);
+        }
 
-        li.appendChild(q);
-        if (metaText) li.appendChild(meta);
-
-        li.onclick = () => {
-          // compter la vue de l'alternative
+        btn.addEventListener("click", () => {
           const updated = incrementViewCount(alt.id);
-
-          // mettre à jour l'objet affiché (au moins nb_vues)
           if (updated && typeof updated.nb_vues === "number") alt.nb_vues = updated.nb_vues;
           if (updated && typeof updated.nb_oui === "number") alt.nb_oui = updated.nb_oui;
           if (updated && typeof updated.nb_non === "number") alt.nb_non = updated.nb_non;
-
           displayAnswer(alt);
-        };
+        });
+
+        li.appendChild(btn);
         alternativesList.appendChild(li);
       });
     }
@@ -2631,32 +2789,36 @@
       searchMessage.textContent = "";
       searchMessage.className = "message info";
 
-      try {
-        const data = apiSearch({ question });
+      // setTimeout(0) : laisse le navigateur peindre "Recherche en cours..."
+      // avant le calcul synchrone (sinon l'etat de chargement reste invisible).
+      setTimeout(() => {
+        try {
+          const data = apiSearch({ question });
 
-        if (data.error) {
-          searchMessage.textContent = data.error;
-          searchMessage.className = "message error";
-          resultsCard.style.display = "none";
-          return;
-        }
+          if (data.error) {
+            searchMessage.textContent = data.error;
+            searchMessage.className = "message error";
+            resultsCard.style.display = "none";
+            return;
+          }
 
-        if (!data.bestAnswer) {
-          resultsCard.style.display = "none";
+          if (!data.bestAnswer) {
+            resultsCard.style.display = "none";
+            searchMessage.textContent = data.message;
+            return;
+          }
+
+          displayAnswer(data.bestAnswer);
+          displayAlternatives(data.alternatives);
+
           searchMessage.textContent = data.message;
-          return;
+        } catch (err) {
+          searchMessage.textContent = "Une erreur est survenue.";
+          searchMessage.className = "message error";
+        } finally {
+          setLoading(false);
         }
-
-        displayAnswer(data.bestAnswer);
-        displayAlternatives(data.alternatives);
-
-        searchMessage.textContent = data.message;
-      } catch (err) {
-        searchMessage.textContent = "Une erreur est survenue.";
-        searchMessage.className = "message error";
-      } finally {
-        setLoading(false);
-      }
+      }, 0);
     }
 
   </script>
